@@ -1,0 +1,8 @@
+*package*/
+
+.vscode/
+.envrc
+.direnv/
+**/__pycache__/
+
+output/
