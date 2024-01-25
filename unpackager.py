@@ -1,16 +1,18 @@
 import bisect
 import json
 
+from collections.abc import Iterator
 from csv import DictReader
 from dataclasses import dataclass
 from datetime import datetime
 from glob import glob
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Final
 from multiprocessing.pool import Pool
 from zoneinfo import ZoneInfo
 
-UTC = ZoneInfo("UTC")
+
+UTC: Final[ZoneInfo] = ZoneInfo("UTC")
 
 
 @dataclass
@@ -24,7 +26,7 @@ class Message:
     content: str
 
     @classmethod
-    def yield_messages(cls, path: Path) -> Generator["Message", None, None]:
+    def yield_messages(cls, path: Path) -> Iterator["Message"]:
         """
         Yield messages from given `path`.
         """
@@ -52,6 +54,18 @@ class MessageChannel:
     id: str
     type: int
     name: str | None
+
+
+@dataclass(frozen=True)
+class MessageCondition:
+    """
+    Represent a message condition to filter messages.
+    """
+
+    channel: str | None = None
+    content: str | None = None
+    min_timestamp: datetime = datetime.min.replace(tzinfo=UTC)
+    max_timestamp: datetime = datetime.max.replace(tzinfo=UTC)
 
 
 class DiscordPackage:
@@ -122,43 +136,45 @@ class DiscordPackage:
         messages = sorted(Message.yield_messages(path / "messages.csv"))
         return channel, messages
 
-    def export_ids(self, path: Path):
+    def export_ids(self, path: Path, condition: MessageCondition | None = None):
         """
         Export ids to given `path`, in format Discord Privacy Team required.
         """
         with open(path, "w") as outfile:
-            for channel, messages in self.messages.items():
+            for channel, messages in self.search_messages(condition=condition):
                 outfile.write(f"{channel.id}:\n")
                 outfile.write(", ".join(message.id for message in messages))
                 outfile.write("\n\n")
 
     def search_messages(
-        self,
-        *,
-        channel: str | int | None = None,
-        content: str | None = None,
-        min_timestamp: datetime = datetime.min.replace(tzinfo=UTC),
-        max_timestamp: datetime = datetime.max.replace(tzinfo=UTC),
-    ) -> Generator[tuple[MessageChannel, Message], None, None]:
+        self, condition: MessageCondition | None = None
+    ) -> Iterator[tuple[MessageChannel, Iterator[Message]]]:
         """
         Search messages by given information.
-        This does not guarantee to return messages in any order.
+        The order of messages in each group is subject to be changed.
         """
-        if min_timestamp > max_timestamp:
+        condition = condition or MessageCondition()
+        if condition.min_timestamp > condition.max_timestamp:
             raise ValueError("Min timestamp is bigger than max timestamp")
 
-        channel = str(channel) if channel is not None else ""
-
         for message_channel, messages in self.messages.items():
-            if channel and not (
-                channel == message_channel.id or channel in (message_channel.name or "")
+            if condition.channel and not (
+                condition.channel == message_channel.id
+                or condition.channel in (message_channel.name or "")
             ):
                 continue
 
-            start_index = bisect.bisect_left(messages, Message("", min_timestamp, ""))
-            end_index = bisect.bisect_right(messages, Message("", max_timestamp, ""))
-            yield from (
-                (message_channel, message)
-                for message in messages[start_index:end_index]
-                if not content or content in message.content
+            start_index = bisect.bisect_left(
+                messages, Message("", condition.min_timestamp, "")
+            )
+            end_index = bisect.bisect_right(
+                messages, Message("", condition.max_timestamp, "")
+            )
+            yield (
+                message_channel,
+                (
+                    message
+                    for message in messages[start_index:end_index]
+                    if not condition.content or condition.content in message.content
+                ),
             )
