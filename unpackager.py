@@ -1,12 +1,16 @@
+import bisect
 import json
 
-from csv import DictReader, DictWriter
+from csv import DictReader
 from dataclasses import dataclass
 from datetime import datetime
 from glob import glob
 from pathlib import Path
 from typing import Any, Generator
 from multiprocessing.pool import Pool
+from zoneinfo import ZoneInfo
+
+UTC = ZoneInfo("UTC")
 
 
 @dataclass
@@ -32,6 +36,11 @@ class Message:
                     timestamp=datetime.fromisoformat(row["Timestamp"]),
                     content=row["Contents"],
                 )
+
+    def __lt__(self, other) -> bool:
+        if not isinstance(other, Message):
+            raise TypeError
+        return self.timestamp < other.timestamp
 
 
 @dataclass(eq=True, frozen=True)
@@ -110,18 +119,46 @@ class DiscordPackage:
                 name=channeljson_raw.get("name"),
             )
 
-        messages = list(Message.yield_messages(path / "messages.csv"))
+        messages = sorted(Message.yield_messages(path / "messages.csv"))
         return channel, messages
 
     def export_ids(self, path: Path):
         """
-        Export ids to given `path`.
+        Export ids to given `path`, in format Discord Privacy Team required.
         """
-        with open(path, "w") as outcsv:
-            writer = DictWriter(outcsv, ["Channel ID", "Message ID"])
-            writer.writeheader()
+        with open(path, "w") as outfile:
             for channel, messages in self.messages.items():
-                writer.writerows(
-                    {"Channel ID": channel.id, "Message ID": message.id}
-                    for message in messages
-                )
+                outfile.write(f"{channel.id}:\n")
+                outfile.write(", ".join(message.id for message in messages))
+                outfile.write("\n\n")
+
+    def search_messages(
+        self,
+        *,
+        channel: str | int | None = None,
+        content: str | None = None,
+        min_timestamp: datetime = datetime.min.replace(tzinfo=UTC),
+        max_timestamp: datetime = datetime.max.replace(tzinfo=UTC),
+    ) -> Generator[tuple[MessageChannel, Message], None, None]:
+        """
+        Search messages by given information.
+        This does not guarantee to return messages in any order.
+        """
+        if min_timestamp > max_timestamp:
+            raise ValueError("Min timestamp is bigger than max timestamp")
+
+        channel = str(channel) if channel is not None else ""
+
+        for message_channel, messages in self.messages.items():
+            if channel and not (
+                channel == message_channel.id or channel in (message_channel.name or "")
+            ):
+                continue
+
+            start_index = bisect.bisect_left(messages, Message("", min_timestamp, ""))
+            end_index = bisect.bisect_right(messages, Message("", max_timestamp, ""))
+            yield from (
+                (message_channel, message)
+                for message in messages[start_index:end_index]
+                if not content or content in message.content
+            )
