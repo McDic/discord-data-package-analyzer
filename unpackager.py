@@ -95,6 +95,12 @@ class DiscordPackage:
         self.messages: dict[MessageChannel, list[Message]] = {}
         self._analyze()
 
+    def __len__(self) -> int:
+        s: int = 0
+        for channel, messages in self.search_messages():
+            s += len(list(messages))
+        return s
+
     @staticmethod
     def check_if_not_directory(path: Path):
         return not path.exists() or not path.is_dir()
