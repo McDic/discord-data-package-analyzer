@@ -25,19 +25,35 @@ class Message:
     timestamp: datetime
     content: str
 
+    def __hash__(self) -> int:
+        return hash(self.id)
+
     @classmethod
     def yield_messages(cls, path: Path) -> Iterator["Message"]:
         """
         Yield messages from given `path`.
         """
-        with open(path, "r") as messages_csv:
-            reader = DictReader(messages_csv)
-            for row in reader:
+        if path.suffix == ".csv":
+            with open(path, "r") as messages_csv:
+                reader = DictReader(messages_csv)
+                for row in reader:
+                    yield cls(
+                        id=row["ID"],
+                        timestamp=datetime.fromisoformat(row["Timestamp"]),
+                        content=row["Contents"],
+                    )
+
+        elif path.suffix == ".json":
+            with open(path, "rb") as messages_json:
+                obj: list[dict] = json.load(messages_json)
+            for raw_obj in obj:
                 yield cls(
-                    id=row["ID"],
-                    timestamp=datetime.fromisoformat(row["Timestamp"]),
-                    content=row["Contents"],
+                    id=str(raw_obj["ID"]),
+                    timestamp=datetime.fromisoformat(raw_obj["Timestamp"] + "+00:00"),
+                    content=raw_obj["Contents"],
                 )
+        else:
+            raise ValueError(f"Unsupported suffix: {path.suffix}")
 
     def __lt__(self, other) -> bool:
         if not isinstance(other, Message):
@@ -80,21 +96,18 @@ class DiscordPackage:
         self._analyze()
 
     @staticmethod
-    def raise_if_not_directory(path: Path):
-        if not path.exists() or not path.is_dir():
-            raise FileNotFoundError(f"{path} is not an existing directory")
+    def check_if_not_directory(path: Path):
+        return not path.exists() or not path.is_dir()
 
     @staticmethod
-    def raise_if_not_file(path: Path):
-        if not path.exists() or not path.is_file():
-            raise FileNotFoundError(f"{path} is not an existing file")
+    def check_if_not_file(path: Path):
+        return not path.exists() or not path.is_file()
 
     def _analyze(self):
         """
         Analyze the whole discord package.
         """
-        self.raise_if_not_directory(self._path)
-
+        assert not self.check_if_not_directory(self._path)
         messages_path = self._path / "messages"
         if messages_path.exists() and messages_path.is_dir():
             self._analyze_messages(messages_path)
@@ -103,8 +116,8 @@ class DiscordPackage:
         """
         Analyze the whole discord messages in a package.
         """
-        self.raise_if_not_directory(path)
-        self.raise_if_not_file(path / "index.json")
+        assert not self.check_if_not_directory(path)
+        assert not self.check_if_not_file(path / "index.json")
         # Skip `index.json` because it is redundant
 
         with Pool() as pool:
@@ -122,9 +135,7 @@ class DiscordPackage:
         """
         Analyze a single message folder.
         """
-        cls.raise_if_not_file(path / "channel.json")
-        cls.raise_if_not_file(path / "messages.csv")
-
+        assert not cls.check_if_not_file(path / "channel.json")
         with open(path / "channel.json") as channeljson_file:
             channeljson_raw: dict[str, Any] = json.load(channeljson_file)
             channel = MessageChannel(
@@ -133,8 +144,13 @@ class DiscordPackage:
                 name=channeljson_raw.get("name"),
             )
 
-        messages = sorted(Message.yield_messages(path / "messages.csv"))
-        return channel, messages
+        POSSIBLE_MESSAGE_FILENAMES = ("messages.csv", "messages.json")
+        for filename in POSSIBLE_MESSAGE_FILENAMES:
+            if not cls.check_if_not_file(path / filename):
+                messages = sorted(Message.yield_messages(path / filename))
+                return channel, messages
+        else:
+            return channel, []
 
     def export_ids(self, path: Path, condition: MessageCondition | None = None):
         """
