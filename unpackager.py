@@ -49,7 +49,9 @@ class Message:
             for raw_obj in obj:
                 yield cls(
                     id=str(raw_obj["ID"]),
-                    timestamp=datetime.fromisoformat(raw_obj["Timestamp"] + "+00:00"),
+                    timestamp=datetime.fromisoformat(raw_obj["Timestamp"]).replace(
+                        tzinfo=UTC
+                    ),
                     content=raw_obj["Contents"],
                 )
         else:
